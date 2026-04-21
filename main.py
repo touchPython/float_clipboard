@@ -44,17 +44,8 @@ class FloatClipboardWindow(QMainWindow):
         # 自动粘贴功能
         paste_layout = QHBoxLayout()
         self.btn_auto_paste = QPushButton("📋 自动粘贴")
-        self.btn_auto_paste.clicked.connect(self.auto_paste)
+        self.btn_auto_paste.clicked.connect(self.copy_all_to_excel)
         paste_layout.addWidget(self.btn_auto_paste)
-        
-        self.label_delay = QLabel("延迟(秒):")
-        paste_layout.addWidget(self.label_delay)
-        
-        self.spin_delay = QSpinBox()
-        self.spin_delay.setMinimum(1)
-        self.spin_delay.setMaximum(10)
-        self.spin_delay.setValue(1)
-        paste_layout.addWidget(self.spin_delay)
         
         self.main_layout.addLayout(paste_layout)
         
@@ -64,7 +55,8 @@ class FloatClipboardWindow(QMainWindow):
 
         # 剪贴板
         self.clipboard = QApplication.clipboard()
-        self.current_images = []  # 存储图片和按钮的列表
+        self.current_images = []  # 存储图片控件的列表
+        self.original_pixmaps = []  # 存储原始图片的列表
 
         # 拖动窗口用
         self.mouse_pos = None
@@ -121,13 +113,63 @@ class FloatClipboardWindow(QMainWindow):
                         self.add_image(pixmap)
             if self.current_images:
                 return
-        
     def clear_images(self):
         """清除所有图片和按钮"""
         for widget in self.current_images:
             widget.deleteLater()
         self.current_images.clear()
-    
+        self.original_pixmaps.clear()
+
+
+    def copy_all_to_excel(self):
+        """将当前列表中的所有图片路径打包成 HTML，以便 Excel 一键粘贴所有图"""
+        if not self.current_images:
+            QToolTip.showText(QCursor.pos(), "列表是空的")
+            return
+
+        html_content = "<html><body>"
+
+        # 压缩比例 (0.8 表示压缩到原始大小的 80%)
+        compression_ratio = 0.8
+
+        # 遍历原始图片列表
+        for i, pixmap in enumerate(self.original_pixmaps):
+            if not pixmap.isNull():
+                # 获取原始图片尺寸
+                original_width = pixmap.width()
+                original_height = pixmap.height()
+
+                # 计算压缩后的尺寸
+                compressed_width = int(original_width * compression_ratio)
+                compressed_height = int(original_height * compression_ratio)
+
+                # 对图片进行压缩
+                compressed_pixmap = pixmap.scaled(
+                    compressed_width, compressed_height, 
+                    Qt.AspectRatioMode.KeepAspectRatio, 
+                    Qt.TransformationMode.SmoothTransformation
+                )
+
+                # 将压缩后的 QPixmap 转换为 Base64 编码的字符串
+                byte_array = QByteArray()
+                buffer = QBuffer(byte_array)
+                buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+                compressed_pixmap.save(buffer, "PNG")
+                base64_data = byte_array.toBase64().data().decode()
+
+                # 包装成 HTML 图片标签，指定压缩后的尺寸，使用 <div> 标签确保图片独立显示
+                html_content += f'<div style="display: block; margin-bottom: 10px;"><img src="data:image/png;base64,{base64_data}" width="{compressed_width}" height="{compressed_height}"></div>'
+
+        html_content += "</body></html>"
+
+        # 创建 MimeData 并设置 HTML 格式
+        mime_data = QMimeData()
+        mime_data.setHtml(html_content)
+
+        # 放入剪贴板
+        self.clipboard.setMimeData(mime_data)
+        QToolTip.showText(QCursor.pos(), "🚀 已打包！请直接在 Excel 按 Command+V")
+
     def add_image(self, pixmap):
         """添加一张图片到列表"""
         # 创建水平布局
@@ -160,6 +202,7 @@ class FloatClipboardWindow(QMainWindow):
         image_widget.setLayout(image_layout)
         self.images_layout.addWidget(image_widget)
         self.current_images.append(image_widget)
+        self.original_pixmaps.append(pixmap)
 
 
 
@@ -180,99 +223,6 @@ class FloatClipboardWindow(QMainWindow):
             self.clipboard.dataChanged.disconnect(self.on_clip_change)
     
 
-    
-    def auto_paste(self):
-        print("自动粘贴所有图片")
-        """自动粘贴所有图片"""
-        import platform
-        import ctypes
-        
-        delay = self.spin_delay.value() * 1000  # 转换为毫秒
-        
-        # 确保有图片要粘贴
-        if not self.current_images:
-            QToolTip.showText(QCursor.pos(), "没有图片可粘贴")
-            return
-        
-        # 依次处理每张图片
-        def paste_next(index=0):
-            if index >= len(self.current_images):
-                QToolTip.showText(QCursor.pos(), "粘贴完成")
-                return
-            
-            # 获取当前图片
-            widget = self.current_images[index]
-            image_layout = widget.layout()
-            image_label = image_layout.itemAt(0).widget()
-            pixmap = image_label.pixmap()
-            
-            if pixmap:
-                # 压缩图片
-                compressed_pixmap = self.compress_image(pixmap)
-                
-                # 复制到剪贴板
-                self.clipboard.setPixmap(compressed_pixmap)
-                QToolTip.showText(QCursor.pos(), f"正在粘贴第 {index+1} 张图片...")
-                
-                # 等待一小段时间确保剪贴板操作完成
-                QThread.msleep(200)
-                
-                # 根据操作系统类型模拟粘贴快捷键
-                if platform.system() == "Windows":
-                    # Windows: Ctrl+V
-                    ctypes.windll.user32.keybd_event(0x11, 0, 0, 0)  # Ctrl 按下
-                    ctypes.windll.user32.keybd_event(0x56, 0, 0, 0)  # V 按下
-                    ctypes.windll.user32.keybd_event(0x56, 0, 2, 0)  # V 释放
-                    ctypes.windll.user32.keybd_event(0x11, 0, 2, 0)  # Ctrl 释放
-                elif platform.system() == "Darwin":
-                    # macOS: Command+V
-                    import subprocess
-                    script = '''
-                    tell application "System Events"
-                        keystroke "v" using command down
-                    end tell
-                    '''
-                    subprocess.Popen(['osascript', '-e', script])
-            
-            # 递归处理下一张图片
-            QTimer.singleShot(delay, lambda: paste_next(index + 1))
-        
-        # 开始粘贴过程，第一张图片也需要延迟
-        QTimer.singleShot(delay, paste_next)
-    
-    def compress_image(self, pixmap):
-        """压缩图片
-        
-        Args:
-            pixmap: 原始 QPixmap 对象
-            
-        Returns:
-            压缩后的 QPixmap 对象
-        """
-        # 将 QPixmap 转换为 QImage
-        image = pixmap.toImage()
-        
-        # 获取原始尺寸
-        width = image.width()
-        height = image.height()
-        
-        # 如果图片太大，调整大小
-        max_size = 1024
-        if width > max_size or height > max_size:
-            # 保持比例调整大小
-            if width > height:
-                new_width = max_size
-                new_height = int(height * (max_size / width))
-            else:
-                new_height = max_size
-                new_width = int(width * (max_size / height))
-            
-            image = image.scaled(new_width, new_height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        
-        # 转换回 QPixmap
-        compressed_pixmap = QPixmap.fromImage(image)
-        
-        return compressed_pixmap
 
 
 if __name__ == '__main__':
